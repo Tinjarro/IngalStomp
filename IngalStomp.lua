@@ -317,6 +317,16 @@ local function MarkAttempt()
   pendingUntil = now + 0.8
 end
 
+-- Macro support: if you cast War Stomp via a macro that bypasses UseAction,
+-- call this so the addon opens its short "attempt window" and then confirms success
+-- by watching the War Stomp cooldown transition.
+function IngalStomp_MacroAttempt()
+  MarkAttempt()
+end
+
+-- Backwards-friendly alias name
+IngalStomp_MacroPing = IngalStomp_MacroAttempt
+
 -- Hook UseAction, mark an attempt for any action press
 local oldUseAction = UseAction
 UseAction = function(slot, checkCursor, onSelf)
