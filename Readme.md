@@ -1,182 +1,81 @@
-\# IngalStomp v1.6 (Turtle WoW 1.12)
+# IngalStomp
 
-
-
-IngalStomp counts \*\*your successful War Stomp activations\*\* and announces each stomp with a randomized yell.  
-
-Counts persist across reloads and logouts. Reset is manual only.
-
-
-
-This addon is intentionally minimal and deterministic.
-
-
+IngalStomp tracks **successful War Stomp usage**, not button presses. The addon intentionally avoids guessing based on combat log noise or global cooldown artifacts, and only records stomps when there is clear confirmation that the ability actually fired.
 
 ---
 
+## How IngalStomp Detects War Stomp
 
+IngalStomp works in two stages:
 
-\## What Gets Counted
+1. **Attempt detection** – the addon detects that War Stomp was attempted.
+2. **Success confirmation** – the addon confirms the stomp by observing the War Stomp cooldown transition.
 
-
-
-A War Stomp is counted \*\*only when all of the following occur\*\*:
-
-
-
-\- War Stomp is activated from an \*\*action bar button\*\*
-
-\- The cast \*\*successfully completes\*\*
-
-\- The War Stomp \*\*cooldown begins\*\*
-
-
-
-The addon does not count attempts.  
-
-It counts \*\*confirmed executions\*\*, using the cooldown transition as the authoritative signal.
-
-
-
-This avoids false positives caused by:
-
-\- canceled casts
-
-\- movement interrupts
-
-\- cooldown-locked presses
-
-\- client-side spell attempts that never resolve
-
-
+When War Stomp is triggered from a normal **action bar button** (clicked or keybound), the vanilla client reliably exposes the attempt, and IngalStomp works automatically.
 
 ---
 
+## War Stomp and Macros (Important)
 
+### Why macros behave differently
 
-\## What Does NOT Get Counted (By Design)
+In vanilla WoW, a macro using:
 
+```
+/cast War Stomp
+```
 
+**does not always pass through the action system** (`UseAction`). In some cases, the spell is cast internally without exposing an attempt event to addons.
 
-The following \*\*will not\*\* increment the counter:
+When this happens:
+- War Stomp may fire successfully
+- The cooldown may start
+- **IngalStomp may not record the stomp**
 
-
-
-\- `/cast War Stomp` macros
-
-\- Spellbook clicks
-
-\- Any cast that does not pass through `UseAction`
-
-
-
-If War Stomp is not bound to an action bar button, it will not be counted.
-
-
-
-This limitation is intentional and documented.  
-
-Accuracy is prioritized over coverage.
-
-
+This is a limitation of the vanilla client, not a bug in IngalStomp.
 
 ---
 
+## Required Macro Format
 
+If you cast War Stomp using a macro, you must include the following line so IngalStomp knows an attempt occurred:
 
-\## Why This Design Exists
+```
+#showtooltip War Stomp
+/cast War Stomp
+/run if IngalStomp_MacroAttempt then IngalStomp_MacroAttempt() end
+```
 
-
-
-Turtle WoW (1.12) does not provide a reliable, universal “spell succeeded” event for War Stomp.
-
-
-
-Cooldown state is the only stable, authoritative signal available without:
-
-\- combat log guesswork
-
-\- SuperWoW dependencies
-
-\- cast-completion heuristics
-
-\- double-count risk
-
-
-
-Using `UseAction` as the attempt gate ensures:
-
-\- zero duplicate counts
-
-\- zero false positives
-
-\- predictable behavior under latency
-
-\- consistent results across sessions
-
-
+This `/run` line simply notifies IngalStomp that a War Stomp attempt just happened. The addon still independently confirms success by checking the cooldown transition.
 
 ---
 
+## What Happens If the `/run` Line Is Missing
 
+- The stomp may still fire in game
+- The cooldown may still start
+- **IngalStomp may not count it**
 
-\## Commands
-
-
-
-\- `/stomp`  
-
-&nbsp; Displays the current War Stomp count.
-
-
-
-\- `/stomp reset`  
-
-&nbsp; Resets the count to zero.
-
-
-
-\- `/stomp debug`  
-
-&nbsp; Toggles debug output.
-
-
+This behavior is expected and cannot be solved cleanly in vanilla without additional APIs.
 
 ---
 
+## Why IngalStomp Does Not Guess from Cooldown Alone
 
+IngalStomp intentionally avoids counting based only on cooldown state. Doing so would introduce false positives caused by:
 
-\## Saved Variables
+- Global cooldown reflections
+- UI refreshes or reloads
+- Entering the world while already on cooldown
 
-
-
-\- `INGALSTOMP\_DB.count`  
-
-&nbsp; Persistent stomp count.
-
-
-
-\- `INGALSTOMP\_DB.debug`  
-
-&nbsp; Debug output toggle.
-
-
+Requiring an explicit attempt signal ensures accuracy and prevents inflated counts.
 
 ---
 
+## Summary
 
-
-\## Scope
-
-
-
-IngalStomp does one thing:
-
-It counts \*\*your\*\* War Stomps, cleanly and honestly.
-
-
-
-If you want broader spell tracking, macro compatibility, or speculative detection, this addon is not trying to be that.
-
-
+- Action bar usage works automatically
+- Macro usage **requires** the `/run` line
+- This is a vanilla limitation, not an addon bug
+- IngalStomp favors correctness over guesswork
 
