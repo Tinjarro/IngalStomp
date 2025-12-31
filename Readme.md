@@ -146,14 +146,12 @@ The following values are saved between sessions:
 
 - Current stomp count  
 - Lifetime stomp count  
-- Announcement settings (global, current, lifetime)  
+- Announcement settings (current, lifetime)  
 - Milestone configuration  
 - Reset mode  
 
-Reloading the UI does not clear counts or preferences.
-
----
 
 ## Notes
 
 If a stomp did not count, the most likely cause is that the addon never received an attempt signal, or the stomp did not successfully complete.
+
