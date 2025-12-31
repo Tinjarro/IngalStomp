@@ -1,4 +1,4 @@
--- IngalStomp v1.6 CLEAN (Turtle 1.12)
+-- IngalStomp v1.7 (Turtle 1.12)
 -- Counts YOUR successful War Stomps, persists, manual reset only, yells a random line each stomp.
 -- Detection: UseAction attempt window + War Stomp spellbook cooldown transition, success only.
 -- Note: By design, it only counts War Stomp activated via an action bar button, not macros or spellbook clicks.
@@ -7,8 +7,62 @@
 -- SavedVariables bootstrap (TOP OF FILE)
 ------------------------------------------------
 if not INGALSTOMP_DB then INGALSTOMP_DB = {} end
-if type(INGALSTOMP_DB.count) ~= "number" then INGALSTOMP_DB.count = 0 end
+-- IMPORTANT: Back-compat
+-- Older versions stored the only counter as INGALSTOMP_DB.count.
+-- We keep that exact field as the Lifetime counter so nobody loses progress.
+if type(INGALSTOMP_DB.count) ~= "number" then
+  -- If a newer experimental build used INGALSTOMP_DB.lifetime, migrate it once.
+  if type(INGALSTOMP_DB.lifetime) == "number" then
+    INGALSTOMP_DB.count = INGALSTOMP_DB.lifetime
+  else
+    INGALSTOMP_DB.count = 0
+  end
+end
+-- Optional mirror for readability, kept in sync with .count
+if type(INGALSTOMP_DB.lifetime) ~= "number" then INGALSTOMP_DB.lifetime = INGALSTOMP_DB.count end
+-- New: resettable "Current" counter persists in DB as well, so it survives reloads even if RUN does not.
+-- Back-compat: if DB.current is missing but RUN.count exists, adopt RUN.count once.
+if type(INGALSTOMP_DB.current) ~= "number" then
+  if INGALSTOMP_RUN and type(INGALSTOMP_RUN.count) == "number" then
+    INGALSTOMP_DB.current = INGALSTOMP_RUN.count
+  else
+    INGALSTOMP_DB.current = 0
+  end
+end
+
+-- New: reset mode applies to Current only. manual (default) never auto-resets; auto resets on zone change.
+if type(INGALSTOMP_DB.resetMode) ~= "string" then INGALSTOMP_DB.resetMode = "manual" end
+if type(INGALSTOMP_DB.placeKey) ~= "string" then INGALSTOMP_DB.placeKey = "" end
+
+-- Persist settings in DB as the source of truth (RUN may not persist on some installs)
 if type(INGALSTOMP_DB.debug) ~= "boolean" then INGALSTOMP_DB.debug = false end
+if type(INGALSTOMP_DB.announceMode) ~= "string" then INGALSTOMP_DB.announceMode = "current" end
+if type(INGALSTOMP_DB.announceEvery) ~= "number" or INGALSTOMP_DB.announceEvery < 1 then INGALSTOMP_DB.announceEvery = 1 end
+
+-- Resettable counter + settings live in a second SavedVariable table
+if not INGALSTOMP_RUN then INGALSTOMP_RUN = {} end
+if type(INGALSTOMP_RUN.count) ~= "number" then INGALSTOMP_RUN.count = 0 end
+if type(INGALSTOMP_RUN.debug) ~= "boolean" then INGALSTOMP_RUN.debug = false end
+if type(INGALSTOMP_RUN.announce) ~= "boolean" then INGALSTOMP_RUN.announce = true end
+-- Announcement mode + frequency (back-compat with older boolean announce)
+if type(INGALSTOMP_RUN.announceMode) ~= "string" then
+  if type(INGALSTOMP_RUN.announce) == "boolean" then
+    INGALSTOMP_RUN.announceMode = INGALSTOMP_RUN.announce and "current" or "off"
+  else
+    INGALSTOMP_RUN.announceMode = "current"
+  end
+end
+if type(INGALSTOMP_RUN.announceEvery) ~= "number" or INGALSTOMP_RUN.announceEvery < 1 then
+  INGALSTOMP_RUN.announceEvery = 1
+end
+
+-- Sync runtime settings from DB (DB is authoritative)
+INGALSTOMP_RUN.debug = (INGALSTOMP_DB.debug and true) or false
+INGALSTOMP_RUN.announceMode = tostring(INGALSTOMP_DB.announceMode or "current")
+INGALSTOMP_RUN.announceEvery = tonumber(INGALSTOMP_DB.announceEvery) or 1
+if INGALSTOMP_RUN.announceEvery < 1 then INGALSTOMP_RUN.announceEvery = 1 end
+INGALSTOMP_RUN.announce = (string.lower(tostring(INGALSTOMP_RUN.announceMode)) ~= "off")
+
 
 local ADDON = "IngalStomp"
 
@@ -178,11 +232,49 @@ local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff00ff7f" .. ADDON .. "|r: " .. msg)
 end
 
+------------------------------------------------
+-- War Stomp spellbook lookup + cooldown helper
+------------------------------------------------
+local STOMP_INDEX = nil
+local BOOKTYPE = BOOKTYPE_SPELL or "spell"
+
+local function FindWarStompIndex()
+  STOMP_INDEX = nil
+  for i = 1, 300 do
+    local name = GetSpellName(i, BOOKTYPE)
+    if not name then break end
+    if name == "War Stomp" then
+      STOMP_INDEX = i
+      return
+    end
+  end
+end
+
+local function GetStompCooldown()
+  if not STOMP_INDEX then
+    return 0, 0, 0
+  end
+  return GetSpellCooldown(STOMP_INDEX, BOOKTYPE)
+end
+
+
 local function DebugPrint(msg)
-  if INGALSTOMP_DB.debug then
+  if INGALSTOMP_RUN.debug then
     DEFAULT_CHAT_FRAME:AddMessage("|cffffd100IngalStomp-DEBUG|r: " .. msg)
   end
 end
+
+-- WoW 1.12 uses Lua 5.0, the % operator is not available, use mod() / math.mod() instead
+local function SafeMod(a, b)
+  a = tonumber(a) or 0
+  b = tonumber(b) or 1
+  if b == 0 then return 0 end
+  if type(mod) == "function" then return mod(a, b) end
+  if math and type(math.mod) == "function" then return math.mod(a, b) end
+  if math and type(math.fmod) == "function" then return math.fmod(a, b) end
+  return a - math.floor(a / b) * b
+end
+
 
 -- Turtle 1.12 in your environment is choking on the % operator, so use a safe integer mod
 local function imod(a, b)
@@ -231,24 +323,47 @@ local function CountAndYell(source)
   end
   lastCountTime = now
 
-  INGALSTOMP_DB.count = INGALSTOMP_DB.count + 1
+  INGALSTOMP_RUN.count = (tonumber(INGALSTOMP_RUN.count) or 0) + 1
+  INGALSTOMP_DB.current = (tonumber(INGALSTOMP_DB.current) or 0) + 1
+  INGALSTOMP_DB.count = (tonumber(INGALSTOMP_DB.count) or 0) + 1
+  INGALSTOMP_DB.lifetime = INGALSTOMP_DB.count
 
   local name = UnitName("player") or "Me"
-  local line = fmt(pickLine(), INGALSTOMP_DB.count, name)
 
-  -- Hard normalize any stray smart quotes if they ever sneak in again
-  line = string.gsub(line, "’", "'")
-  line = string.gsub(line, "“", '"')
-  line = string.gsub(line, "”", '"')
+  -- Decide what number drives announcements
+  local mode = string.lower(tostring(INGALSTOMP_RUN.announceMode or "current"))
+  local every = tonumber(INGALSTOMP_RUN.announceEvery) or 1
+  if every < 1 then every = 1 end
 
-  if line and line ~= "" then
-    SendChatMessage(line, "YELL")
+  local announceCount = nil
+  if mode == "off" then
+    announceCount = nil
+  elseif mode == "lifetime" then
+    announceCount = INGALSTOMP_DB.count
   else
-    DebugPrint("empty yell string, skipped")
+    -- default to current
+    announceCount = INGALSTOMP_RUN.count
   end
 
-  if INGALSTOMP_DB.debug then
-    Print("Stomp counted " .. INGALSTOMP_DB.count .. " (" .. (source or "?") .. ")")
+  if announceCount and INGALSTOMP_RUN.announce and (SafeMod(announceCount, every) == 0) then
+    local line = fmt(pickLine(), announceCount, name)
+
+    -- Hard normalize any stray smart quotes if they ever sneak in again
+    line = string.gsub(line, "’", "'")
+    line = string.gsub(line, "“", '"')
+    line = string.gsub(line, "”", '"')
+
+    if line and line ~= "" then
+      SendChatMessage(line, "YELL")
+    else
+      DebugPrint("empty yell string, skipped")
+    end
+  else
+    DebugPrint("announce skipped (mode/cadence)")
+  end
+
+  if INGALSTOMP_RUN.debug then
+    Print("Stomp counted " .. INGALSTOMP_RUN.count .. " (" .. (source or "?") .. ")")
   end
 end
 
@@ -260,48 +375,113 @@ SLASH_INGALSTOMP2 = "/ingalstomp"
 SlashCmdList["INGALSTOMP"] = function(msg)
   msg = string.lower(msg or "")
 
+  local function Status()
+    local cur = tonumber(INGALSTOMP_RUN.count) or 0
+    local life = tonumber(INGALSTOMP_DB.count) or 0
+    local mode = string.upper(tostring(INGALSTOMP_RUN.announceMode or "current"))
+    local every = tonumber(INGALSTOMP_RUN.announceEvery) or 1
+    local rm = string.upper(tostring(INGALSTOMP_DB.resetMode or "manual"))
+    Print("Current count: " .. cur .. " ; Lifetime count: " .. life .. " ; Announce: " .. mode .. " every " .. every .. " ; ResetMode: " .. rm)
+  end
+
+  if msg == "" or msg == "count" or msg == "counts" or msg == "report" then
+    Status()
+    Print("/stomp reset ; /stomp debug ; /stomp resetmode manual|auto ; /stomp announce off|current|lifetime ; /stomp announce 1|5|10|20|50|100")
+    return
+  end
+
   if msg == "reset" or msg == "clear" then
-    INGALSTOMP_DB.count = 0
-    Print("count reset to 0")
+    INGALSTOMP_RUN.count = 0
+    INGALSTOMP_DB.current = 0
+    Print("current count reset to 0")
+    Status()
     return
   end
 
   if msg == "debug" then
-    INGALSTOMP_DB.debug = not INGALSTOMP_DB.debug
-    Print("debug " .. (INGALSTOMP_DB.debug and "ON" or "OFF"))
+    INGALSTOMP_RUN.debug = not INGALSTOMP_RUN.debug
+    INGALSTOMP_DB.debug = INGALSTOMP_RUN.debug
+    Print("debug " .. (INGALSTOMP_RUN.debug and "ON" or "OFF"))
     return
   end
 
-  Print("current count: " .. INGALSTOMP_DB.count .. " ; /stomp reset ; /stomp debug")
-end
+  if string.sub(msg, 1, 9) == "resetmode" then
+    local arg = string.sub(msg, 10) or ""
+    arg = string.gsub(arg, "^%s+", "")
+    arg = string.lower(tostring(arg))
 
-------------------------------------------------
--- War Stomp spellbook index, cooldown polling
-------------------------------------------------
-local STOMP_INDEX = nil
-
-local function FindWarStompIndex()
-  STOMP_INDEX = nil
-  local i = 1
-  while true do
-    local name = GetSpellName(i, BOOKTYPE_SPELL)
-    if not name then break end
-    if name == "War Stomp" then
-      STOMP_INDEX = i
-      break
+    if arg == "" then
+      Print("resetmode " .. string.upper(tostring(INGALSTOMP_DB.resetMode or "manual")))
+      return
     end
-    i = i + 1
-  end
-  DebugPrint("War Stomp index=" .. tostring(STOMP_INDEX))
-end
 
-local function GetStompCooldown()
-  if not STOMP_INDEX then return 0, 0, 0 end
-  local start, duration, enabled = GetSpellCooldown(STOMP_INDEX, BOOKTYPE_SPELL)
-  if not start then start = 0 end
-  if not duration then duration = 0 end
-  if not enabled then enabled = 0 end
-  return start, duration, enabled
+    if arg == "manual" or arg == "auto" then
+      INGALSTOMP_DB.resetMode = arg
+      Print("resetmode set to " .. string.upper(arg))
+      Status()
+      return
+    end
+
+    Print("usage: /stomp resetmode manual|auto")
+    return
+  end
+
+  -- announce controls
+  --   /stomp announce                (toggle off/current)
+  --   /stomp announce off|current|lifetime
+  --   /stomp announce on|off         (on maps to current, kept for older habits)
+  --   /stomp announce 1|5|10|20|50|100  (set cadence)
+  if msg == "announce" or msg == "yell" then
+    local cur = string.lower(tostring(INGALSTOMP_RUN.announceMode or "current"))
+    if cur == "off" then
+      INGALSTOMP_RUN.announceMode = "current"
+    else
+      INGALSTOMP_RUN.announceMode = "off"
+    end
+    INGALSTOMP_RUN.announce = (INGALSTOMP_RUN.announceMode ~= "off")
+    INGALSTOMP_DB.announceMode = INGALSTOMP_RUN.announceMode
+    Print("announce mode " .. string.upper(INGALSTOMP_RUN.announceMode))
+    Status()
+    return
+  end
+
+  if string.sub(msg, 1, 9) == "announce " or string.sub(msg, 1, 5) == "yell " then
+    local arg = msg
+    if string.sub(msg, 1, 9) == "announce " then
+      arg = string.sub(msg, 10)
+    else
+      arg = string.sub(msg, 6)
+    end
+    arg = string.lower(tostring(arg or ""))
+
+    local n = tonumber(arg)
+    if n then
+      if n == 1 or n == 5 or n == 10 or n == 20 or n == 50 or n == 100 then
+        INGALSTOMP_RUN.announceEvery = n
+        INGALSTOMP_DB.announceEvery = n
+        Print("announce cadence set to every " .. n)
+        Status()
+      else
+        Print("invalid cadence. Use 1, 5, 10, 20, 50, or 100.")
+      end
+      return
+    end
+
+    if arg == "on" then arg = "current" end
+    if arg == "off" or arg == "current" or arg == "lifetime" then
+      INGALSTOMP_RUN.announceMode = arg
+      INGALSTOMP_RUN.announce = (arg ~= "off")
+      INGALSTOMP_DB.announceMode = arg
+      Print("announce mode " .. string.upper(arg))
+      Status()
+      return
+    end
+
+    Print("usage: /stomp announce off|current|lifetime ; /stomp announce 1|5|10|20|50|100")
+    return
+  end
+
+  Print("unknown command. Try /stomp")
 end
 
 ------------------------------------------------
@@ -342,16 +522,61 @@ local ticker = 0
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
+f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 
 f:SetScript("OnEvent", function()
-  FindWarStompIndex()
-  local s = GetStompCooldown()
-  lastCDStart = s or 0
+  -- In Vanilla 1.12, the current event name is in the global 'event' variable.
+  if event == "PLAYER_LOGIN" then
+    -- Sync Current into RUN so the existing counting/announce logic keeps working.
+    -- Sync settings from DB (authoritative) into RUN
+    INGALSTOMP_RUN.debug = (INGALSTOMP_DB.debug and true) or false
+    INGALSTOMP_RUN.announceMode = tostring(INGALSTOMP_DB.announceMode or (INGALSTOMP_RUN.announceMode or "current"))
+    INGALSTOMP_RUN.announceEvery = tonumber(INGALSTOMP_DB.announceEvery) or (tonumber(INGALSTOMP_RUN.announceEvery) or 1)
+    if INGALSTOMP_RUN.announceEvery < 1 then INGALSTOMP_RUN.announceEvery = 1 end
+    INGALSTOMP_RUN.announce = (string.lower(tostring(INGALSTOMP_RUN.announceMode)) ~= "off")
 
-  Print("loaded. Count: " .. INGALSTOMP_DB.count .. " | /stomp reset | /stomp debug")
+    if type(INGALSTOMP_DB.current) ~= "number" then INGALSTOMP_DB.current = 0 end
+    INGALSTOMP_RUN.count = tonumber(INGALSTOMP_DB.current) or 0
 
-  if not STOMP_INDEX then
-    Print("War Stomp not found in spellbook, addon will not count stomps")
+    FindWarStompIndex()
+    local s = GetStompCooldown()
+    lastCDStart = s or 0
+
+    -- Initialize place key
+    local z = GetRealZoneText() or GetZoneText() or ""
+    INGALSTOMP_DB.placeKey = tostring(z)
+
+    -- Show status
+    local cur = tonumber(INGALSTOMP_RUN.count) or 0
+    local life = tonumber(INGALSTOMP_DB.count) or 0
+    local mode = string.upper(tostring(INGALSTOMP_RUN.announceMode or "current"))
+    local every = tonumber(INGALSTOMP_RUN.announceEvery) or 1
+    local rm = string.upper(tostring(INGALSTOMP_DB.resetMode or "manual"))
+    Print("Current count: " .. cur .. " ; Lifetime count: " .. life .. " ; Announce: " .. mode .. " every " .. every .. " ; ResetMode: " .. rm)
+    Print("/stomp reset ; /stomp debug ; /stomp resetmode manual|auto ; /stomp announce off|current|lifetime ; /stomp announce 1|5|10|20|50|100")
+
+    if not STOMP_INDEX then
+      Print("War Stomp not found in spellbook, addon will not count stomps")
+    end
+    return
+  end
+
+  if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
+    if string.lower(tostring(INGALSTOMP_DB.resetMode or "manual")) == "auto" then
+      local z = GetRealZoneText() or GetZoneText() or ""
+      local key = tostring(z)
+      if key ~= tostring(INGALSTOMP_DB.placeKey or "") then
+        INGALSTOMP_DB.placeKey = key
+        INGALSTOMP_DB.current = 0
+        INGALSTOMP_RUN.count = 0
+        Print("current count auto-reset (zone change)")
+      end
+    else
+      -- manual: ensure we stay in sync on reload / zoning
+      INGALSTOMP_RUN.count = tonumber(INGALSTOMP_DB.current) or 0
+    end
+    return
   end
 end)
 
