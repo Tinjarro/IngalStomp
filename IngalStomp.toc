@@ -2,7 +2,8 @@
 ## Title: IngalStomp
 ## Notes: Counts your War Stomps; yells and saves count until manual reset.
 ## Author: You
-## Version: 1.6
+## Version: 1.7
 ## SavedVariables: INGALSTOMP_DB
+
 
 IngalStomp.lua
